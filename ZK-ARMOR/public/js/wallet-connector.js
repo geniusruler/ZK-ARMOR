@@ -1,11 +1,10 @@
-// public/js/wallet-connector.ts
-// Browser-compatible Midnight Wallet Connector (works directly with Lace extension)
-class MidnightWalletConnector {
+export class MidnightWalletConnector {
     constructor() {
         this.walletState = null;
-        this.laceProvider = null;
+        this.walletAPI = null;
+        this.stateSubscription = null;
         this.listeners = new Map();
-        console.log("Midnight Wallet Connector initialized");
+        console.log("🔌 Midnight Wallet Connector initialized");
     }
     /**
      * Check if Lace wallet extension is available
@@ -13,111 +12,253 @@ class MidnightWalletConnector {
     async checkLaceAvailability() {
         if (typeof window === "undefined")
             return false;
-        // Check for Lace wallet
+        // Check for Midnight in window
         const midnight = window.midnight;
-        if (!midnight)
+        if (!midnight || !midnight.mnLace) {
+            console.log("❌ Lace wallet not detected");
             return false;
-        // Check for Midnight support in Lace
-        return !!midnight;
+        }
+        console.log("✅ Lace wallet detected");
+        return true;
     }
     /**
      * Connect to Midnight wallet via Lace extension
+     * Gets full wallet state including keys needed for transactions
      */
     async connect() {
         try {
-            console.log("Connecting to Lace wallet...");
-            // Check if Lace is available
+            console.log("🔄 Connecting to Lace wallet...");
+            // 1. Check if Lace is available
             const hasLace = await this.checkLaceAvailability();
             if (!hasLace) {
-                // Demo mode for hackathon
-                console.log("Using demo mode");
+                console.log("⚠️ Lace not available, falling back to demo mode");
                 return this.connectDemoMode();
             }
-            // Get Lace provider
+            // 2. Get Lace provider
             const midnight = window.midnight;
-            this.laceProvider = midnight.mnLace;
-            if (!this.laceProvider) {
-                throw new Error("Midnight provider not available in Lace");
+            const laceWallet = midnight.mnLace;
+            console.log("📋 Wallet info:", {
+                name: laceWallet.name,
+                apiVersion: laceWallet.apiVersion
+            });
+            // 3. Check if already enabled
+            const isEnabled = await laceWallet.isEnabled();
+            console.log(`🔐 DApp ${isEnabled ? 'already' : 'not'} authorized`);
+            // 4. Enable wallet (request permission)
+            console.log("🙏 Requesting wallet authorization...");
+            this.walletAPI = await laceWallet.enable();
+            if (!this.walletAPI) {
+                throw new Error("Failed to enable wallet");
             }
-            // Request connection
-            console.log("Requesting Lace wallet permission...");
-            const isEnabled = await this.laceProvider.enable();
-            if (!isEnabled) {
-                throw new Error("User rejected wallet connection");
+            console.log("✅ Wallet enabled!");
+            console.log("📦 Available API methods:", Object.keys(this.walletAPI));
+            // 5. Get wallet state (handle both Observable and Promise cases)
+            console.log("📡 Getting wallet state...");
+            const stateResult = this.walletAPI.state();
+            if (!stateResult) {
+                throw new Error("Failed to get wallet state");
             }
-            // Get wallet address
-            let address;
-            if (typeof this.laceProvider.getAddress === "function") {
-                address = await this.laceProvider.getAddress();
+            console.log("🔍 State result type:", typeof stateResult);
+            console.log("🔍 Has subscribe?", typeof stateResult.subscribe === 'function');
+            console.log("🔍 Has pipe?", typeof stateResult.pipe === 'function');
+            // 6. Handle both Observable and Promise cases
+            console.log("👂 Getting wallet state data...");
+            // Case 1: It's an Observable (RxJS)
+            if (stateResult.pipe && typeof stateResult.subscribe === 'function') {
+                console.log("📡 State is Observable - subscribing...");
+                return new Promise((resolve, reject) => {
+                    this.stateSubscription = stateResult.subscribe({
+                        next: (state) => {
+                            console.log("📬 Received wallet state update!");
+                            console.log("🔍 State structure:", JSON.stringify(state, null, 2));
+                            this.processWalletState(state, resolve, reject);
+                        },
+                        error: (err) => {
+                            console.error("❌ Error in wallet state subscription:", err);
+                            reject(new Error(`Wallet state error: ${err.message}`));
+                        }
+                    });
+                });
             }
-            else if (typeof this.laceProvider.getChangeAddress === "function") {
-                address = await this.laceProvider.getChangeAddress();
+            // Case 2: It's a Promise
+            else if (stateResult.then && typeof stateResult.then === 'function') {
+                console.log("⏳ State is Promise - awaiting...");
+                const state = await stateResult;
+                console.log("📬 Received wallet state!");
+                console.log("🔍 State structure:", JSON.stringify(state, null, 2));
+                return this.processWalletStateSync(state);
             }
+            // Case 3: It's a direct value
             else {
-                throw new Error("Cannot get address from wallet");
+                console.log("📦 State is direct value - using immediately...");
+                console.log("🔍 State structure:", JSON.stringify(stateResult, null, 2));
+                return this.processWalletStateSync(stateResult);
             }
-            // Store wallet state
-            this.walletState = {
-                address: address,
-                balance: "0 DUST", // Balance fetching might not be available
-                connected: true,
-            };
-            this.emit("connected", this.walletState);
-            console.log("✅ Wallet connected:", address);
-            return {
-                success: true,
-                address: address,
-            };
         }
         catch (error) {
-            console.error("Wallet connection failed:", error);
-            // If real wallet fails, offer demo mode
+            console.error("❌ Wallet connection failed:", error);
+            // Clean up subscription on error
+            if (this.stateSubscription) {
+                this.stateSubscription.unsubscribe();
+                this.stateSubscription = null;
+            }
+            // User rejected connection
             if (error.message?.includes("rejected") ||
-                error.message?.includes("denied")) {
+                error.message?.includes("denied") ||
+                error.message?.includes("User rejected")) {
                 return {
                     success: false,
-                    error: "Wallet connection was rejected. Please try again.",
+                    error: "Connection rejected by user. Please try again."
                 };
             }
-            // Fallback to demo mode
-            console.log("Falling back to demo mode due to error");
+            // Fallback to demo mode for development
+            console.log("⚠️ Falling back to demo mode");
             return this.connectDemoMode();
         }
     }
     /**
-     * Demo mode for hackathon presentations
+     * Process wallet state for Observable subscription (async callback)
+     */
+    processWalletState(state, resolve, reject) {
+        try {
+            // Extract all the important data
+            const address = state.address;
+            const coinPublicKey = state.coinPublicKey;
+            const encryptionPublicKey = state.encryptionPublicKey;
+            if (!address || !coinPublicKey || !encryptionPublicKey) {
+                console.warn("⚠️ Incomplete wallet state:", {
+                    hasAddress: !!address,
+                    hasCoinPublicKey: !!coinPublicKey,
+                    hasEncryptionPublicKey: !!encryptionPublicKey
+                });
+                return; // Wait for complete state
+            }
+            console.log("✅ Complete wallet state received!");
+            console.log("📍 Address:", address);
+            console.log("🪙 Coin Public Key:", coinPublicKey.substring(0, 20) + "...");
+            console.log("🔐 Encryption Public Key:", encryptionPublicKey.substring(0, 20) + "...");
+            // Store complete wallet state
+            this.walletState = {
+                address,
+                coinPublicKey,
+                encryptionPublicKey,
+                balance: "0 DUST",
+                connected: true,
+                addressLegacy: state.addressLegacy,
+                coinPublicKeyLegacy: state.coinPublicKeyLegacy,
+                encryptionPublicKeyLegacy: state.encryptionPublicKeyLegacy
+            };
+            // Notify listeners
+            this.emit("connected", this.walletState);
+            // Resolve promise
+            resolve({
+                success: true,
+                address: address
+            });
+        }
+        catch (err) {
+            reject(new Error(`Failed to process wallet state: ${err.message}`));
+        }
+    }
+    /**
+     * Process wallet state synchronously (for Promise/direct value)
+     */
+    processWalletStateSync(state) {
+        try {
+            console.log("🔍 Processing wallet state...");
+            // Extract all the important data
+            const address = state.address;
+            const coinPublicKey = state.coinPublicKey;
+            const encryptionPublicKey = state.encryptionPublicKey;
+            if (!address) {
+                throw new Error("Address not found in wallet state");
+            }
+            if (!coinPublicKey) {
+                console.warn("⚠️ Coin public key not found - may cause issues with transactions");
+            }
+            if (!encryptionPublicKey) {
+                console.warn("⚠️ Encryption public key not found - may cause issues with transactions");
+            }
+            console.log("✅ Wallet state processed!");
+            console.log("📍 Address:", address);
+            if (coinPublicKey) {
+                console.log("🪙 Coin Public Key:", coinPublicKey.substring(0, 20) + "...");
+            }
+            if (encryptionPublicKey) {
+                console.log("🔐 Encryption Public Key:", encryptionPublicKey.substring(0, 20) + "...");
+            }
+            // Store wallet state (even if keys are missing, we can still work)
+            this.walletState = {
+                address,
+                coinPublicKey: coinPublicKey || "",
+                encryptionPublicKey: encryptionPublicKey || "",
+                balance: "0 DUST",
+                connected: true,
+                addressLegacy: state.addressLegacy,
+                coinPublicKeyLegacy: state.coinPublicKeyLegacy,
+                encryptionPublicKeyLegacy: state.encryptionPublicKeyLegacy
+            };
+            // Notify listeners
+            this.emit("connected", this.walletState);
+            return {
+                success: true,
+                address: address
+            };
+        }
+        catch (err) {
+            console.error("❌ Failed to process wallet state:", err);
+            return {
+                success: false,
+                error: `Failed to process wallet state: ${err.message}`
+            };
+        }
+    }
+    /**
+     * Demo mode for development/testing without real wallet
      */
     connectDemoMode() {
+        console.log("🎮 Activating demo mode");
         const demoAddress = "mn_shield-addr_test1sg2krfhns8udfhyruwt622dsqk3jc6965vgtn2zqjleae755rmjsxqxzqg2t97grw097k25q2m6vmg8etvqwan79wu6ca6q8rcwqdeftpycv8cgn";
+        const demoCoinPublicKey = "demo_coin_public_key_" + "0".repeat(128);
+        const demoEncryptionPublicKey = "demo_encryption_public_key_" + "0".repeat(128);
         this.walletState = {
             address: demoAddress,
+            coinPublicKey: demoCoinPublicKey,
+            encryptionPublicKey: demoEncryptionPublicKey,
             balance: "1000 DUST",
-            connected: true,
+            connected: true
         };
         this.emit("connected", this.walletState);
-        // Show friendly demo mode message
+        // Show user-friendly message
         setTimeout(() => {
             alert("🎮 Demo Mode Active\n\n" +
                 "Lace wallet not detected or connection failed.\n" +
                 "Using demo mode for presentation.\n\n" +
+                "⚠️ Transactions will NOT be submitted to the blockchain.\n\n" +
                 "To connect real wallet:\n" +
                 "1. Install Lace from https://www.lace.io\n" +
                 "2. Enable Midnight Network in settings\n" +
                 "3. Refresh page and reconnect");
-        }, 100);
+        }, 500);
         return {
             success: true,
-            address: demoAddress,
+            address: demoAddress
         };
     }
     /**
-     * Disconnect wallet
+     * Disconnect wallet and cleanup
      */
     async disconnect() {
-        this.laceProvider = null;
+        console.log("👋 Disconnecting wallet...");
+        // Unsubscribe from state updates
+        if (this.stateSubscription) {
+            this.stateSubscription.unsubscribe();
+            this.stateSubscription = null;
+        }
+        this.walletAPI = null;
         this.walletState = null;
         this.emit("disconnected");
-        console.log("Wallet disconnected");
+        console.log("✅ Wallet disconnected");
     }
     /**
      * Check if wallet is connected
@@ -132,6 +273,36 @@ class MidnightWalletConnector {
         return this.walletState?.address || "";
     }
     /**
+     * Get coin public key (needed for transactions!)
+     */
+    getCoinPublicKey() {
+        if (!this.walletState?.coinPublicKey) {
+            throw new Error("Coin public key not available - wallet not properly connected");
+        }
+        return this.walletState.coinPublicKey;
+    }
+    /**
+     * Get encryption public key (needed for transactions!)
+     */
+    getEncryptionPublicKey() {
+        if (!this.walletState?.encryptionPublicKey) {
+            throw new Error("Encryption public key not available - wallet not properly connected");
+        }
+        return this.walletState.encryptionPublicKey;
+    }
+    /**
+     * Get the full wallet state
+     */
+    getWalletState() {
+        return this.walletState;
+    }
+    /**
+     * Get the wallet API instance (needed for transactions!)
+     */
+    getWalletAPI() {
+        return this.walletAPI;
+    }
+    /**
      * Get wallet balance
      */
     async getBalance() {
@@ -139,92 +310,27 @@ class MidnightWalletConnector {
             throw new Error("Wallet not connected");
         }
         // In demo mode, return stored balance
-        if (!this.laceProvider) {
+        if (!this.walletAPI) {
             return this.walletState.balance;
         }
         // Try to get real balance from Lace
         try {
-            if (typeof this.laceProvider.getBalance === "function") {
-                const balance = await this.laceProvider.getBalance();
+            if (typeof this.walletAPI.getBalance === "function") {
+                const balance = await this.walletAPI.getBalance();
+                this.walletState.balance = balance;
                 return balance;
             }
             return this.walletState.balance;
         }
         catch (error) {
-            console.warn("Could not fetch balance:", error);
+            console.warn("⚠️ Could not fetch balance:", error);
             return this.walletState.balance;
         }
     }
     /**
      * Register a model on the blockchain
+     * NOTE: This is a transitional method. Eventually this should be in ModelRegistryService.
      */
-    // public async registerModel(params: {
-    //   modelHash: string;
-    //   zkProof: any;
-    //   creatorName?: string;
-    //   description?: string;
-    // }): Promise<{ success: boolean; txHash?: string; error?: string }> {
-    //   if (!this.walletState?.connected) {
-    //     return {
-    //       success: false,
-    //       error: 'Wallet not connected',
-    //     };
-    //   }
-    //   try {
-    //     console.log('Registering model...', params.modelHash);
-    //     // In demo mode, simulate transaction
-    //     if (!this.laceProvider) {
-    //       console.log('Demo mode: simulating transaction');
-    //       // Simulate network delay
-    //       await new Promise(resolve => setTimeout(resolve, 1500));
-    //       const txHash = '0x' + Math.random().toString(16).substring(2, 42);
-    //       // Call backend API to store in mock database
-    //       const response = await fetch('/api/register', {
-    //         method: 'POST',
-    //         headers: { 'Content-Type': 'application/json' },
-    //         body: JSON.stringify({
-    //           modelHash: params.modelHash,
-    //           zkProof: params.zkProof,
-    //           creatorName: params.creatorName,
-    //           description: params.description,
-    //         }),
-    //       });
-    //       if (!response.ok) {
-    //         throw new Error('Backend registration failed');
-    //       }
-    //       return {
-    //         success: true,
-    //         txHash: txHash,
-    //       };
-    //     }
-    //     // Real wallet transaction
-    //     // Note: Actual transaction format depends on your smart contract
-    //     const txData = {
-    //       type: 'contract_call',
-    //       contract: process.env.MIDNIGHT_CONTRACT_ADDRESS || 'demo-contract',
-    //       function: 'registerModel',
-    //       params: {
-    //         modelHash: params.modelHash,
-    //         zkProof: params.zkProof,
-    //       },
-    //     };
-    //     // Sign and submit via Lace
-    //     if (typeof this.laceProvider.signAndSubmitTx === 'function') {
-    //       const result = await this.laceProvider.signAndSubmitTx(txData);
-    //       return {
-    //         success: true,
-    //         txHash: result.txHash || result.transactionId,
-    //       };
-    //     }
-    //     throw new Error('Wallet does not support transaction signing');
-    //   } catch (error: any) {
-    //     console.error('Model registration failed:', error);
-    //     return {
-    //       success: false,
-    //       error: error.message || 'Failed to register model',
-    //     };
-    //   }
-    // }
     async registerModel(params) {
         if (!this.walletState?.connected) {
             return {
@@ -233,7 +339,7 @@ class MidnightWalletConnector {
             };
         }
         try {
-            console.log("Registering model...", params.modelHash);
+            console.log("📝 Registering model...", params.modelHash);
             // Call backend API
             const response = await fetch("/api/register", {
                 method: "POST",
@@ -243,15 +349,18 @@ class MidnightWalletConnector {
                     zkProof: params.zkProof,
                     creatorName: params.creatorName,
                     description: params.description,
-                    a2dCertificate: params.a2dCertificate, // Include A2D certificate if available
-                    walletAddress: this.walletState.address, // Include wallet address
+                    a2dCertificate: params.a2dCertificate,
+                    walletAddress: this.walletState.address,
+                    // Future: These will be used for real blockchain transactions
+                    coinPublicKey: this.walletState.coinPublicKey,
+                    encryptionPublicKey: this.walletState.encryptionPublicKey,
                 }),
             });
             const result = await response.json();
             if (!response.ok || !result.success) {
                 throw new Error(result.error || "Registration failed");
             }
-            console.log("✅ Model registered successfully:", result.txHash);
+            console.log("✅ Model registered:", result.txHash);
             return {
                 success: true,
                 txHash: result.txHash,
@@ -267,27 +376,42 @@ class MidnightWalletConnector {
     }
     /**
      * Verify a model (read-only query)
+     * NOTE: This is a transitional method. Eventually this should query the smart contract.
      */
     async verifyModel(modelHash) {
         try {
+            if (!modelHash || !/^[a-f0-9]{64}$/i.test(modelHash)) {
+                return {
+                    isVerified: false,
+                    error: "Invalid model hash format",
+                };
+            }
+            console.log("🔍 Verifying model...", modelHash);
             const response = await fetch("/api/verify", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ modelHash }),
             });
+            const result = await response.json();
             if (!response.ok) {
-                throw new Error("Verification request failed");
+                throw new Error(result.error || "Verification failed");
             }
-            const data = await response.json();
-            return data;
+            console.log("✅ Verification result:", result.isVerified);
+            return {
+                isVerified: result.isVerified,
+                modelInfo: result.modelInfo,
+            };
         }
         catch (error) {
-            console.error("Verification failed:", error);
-            throw error;
+            console.error("❌ Model verification failed:", error);
+            return {
+                isVerified: false,
+                error: error.message || "Failed to verify model",
+            };
         }
     }
     /**
-     * Event listener system
+     * Event emitter
      */
     on(event, callback) {
         if (!this.listeners.has(event)) {
@@ -295,33 +419,30 @@ class MidnightWalletConnector {
         }
         this.listeners.get(event).push(callback);
     }
+    /**
+     * Remove event listener
+     */
     off(event, callback) {
+        if (!this.listeners.has(event))
+            return;
         const callbacks = this.listeners.get(event);
-        if (callbacks) {
-            const index = callbacks.indexOf(callback);
-            if (index > -1) {
-                callbacks.splice(index, 1);
-            }
-        }
-    }
-    emit(event, ...args) {
-        const callbacks = this.listeners.get(event);
-        if (callbacks) {
-            callbacks.forEach((callback) => callback(...args));
+        const index = callbacks.indexOf(callback);
+        if (index > -1) {
+            callbacks.splice(index, 1);
         }
     }
     /**
-     * Get short wallet address for display
+     * Emit event
      */
-    getShortAddress() {
-        if (!this.walletState?.address)
-            return "";
-        const addr = this.walletState.address;
-        if (addr.length < 20)
-            return addr;
-        return `${addr.substring(0, 10)}...${addr.substring(addr.length - 8)}`;
+    emit(event, data) {
+        if (!this.listeners.has(event))
+            return;
+        const callbacks = this.listeners.get(event);
+        callbacks.forEach((callback) => callback(data));
     }
 }
 // Export singleton instance
 export const walletConnector = new MidnightWalletConnector();
+// For compatibility with existing code
+export default walletConnector;
 //# sourceMappingURL=wallet-connector.js.map
