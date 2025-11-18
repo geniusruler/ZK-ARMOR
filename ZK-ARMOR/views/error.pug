@@ -1,0 +1,39 @@
+doctype html
+html(lang='en')
+  head
+    meta(charset='UTF-8')
+    meta(name='viewport', content='width=device-width, initial-scale=1.0')
+    title= title || 'Error'
+    style.
+      body {
+        font-family: Arial, sans-serif;
+        background: #0f0f23;
+        color: #f3f4f6;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 100vh;
+        margin: 0;
+      }
+      .error-container {
+        text-align: center;
+        padding: 2rem;
+      }
+      h1 {
+        color: #ef4444;
+        font-size: 3rem;
+      }
+      p {
+        font-size: 1.2rem;
+        color: #9ca3af;
+      }
+      a {
+        color: #7c3aed;
+        text-decoration: none;
+      }
+  body
+    .error-container
+      h1 ⚠️ Error
+      p= message || 'An error occurred'
+      p
+        a(href='/') ← Back to Home
