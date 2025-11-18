@@ -1,0 +1,58 @@
+{
+  "name": "ai-model-trust-registry",
+  "version": "1.0.0",
+  "description": "AI Model Trust Registry - Privacy-preserving model verification on Midnight Network",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc && tsc -p tsconfig.client.json && node build-client.js",
+    "start": "node dist/server.js",
+    "dev": "ts-node-dev --respawn --transpile-only server.ts",
+    "watch": "tsc --watch",
+    "lint": "eslint . --ext .ts",
+    "format": "prettier --write \"**/*.{ts,js,json,css,pug}\""
+  },
+  "keywords": [
+    "midnight",
+    "blockchain",
+    "ai",
+    "zero-knowledge",
+    "privacy",
+    "model-verification"
+  ],
+  "author": "Your Team",
+  "license": "MIT",
+  "dependencies": {
+    "@midnight-ntwrk/compact-runtime": "^0.9.0",
+    "@midnight-ntwrk/ledger": "^4.0.0",
+    "@midnight-ntwrk/midnight-js-types": "^3.0.0-alpha.3",
+    "@midnight-ntwrk/wallet": "^5.0.0",
+    "compression": "^1.7.4",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "form-data": "^4.0.5",
+    "helmet": "^7.1.0",
+    "multer": "^2.0.2",
+    "pug": "^3.0.2",
+    "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "@types/compression": "^1.7.5",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/form-data": "^2.2.1",
+    "@types/node": "^20.10.5",
+    "@typescript-eslint/eslint-plugin": "^6.15.0",
+    "@typescript-eslint/parser": "^6.15.0",
+    "esbuild": "^0.27.0",
+    "eslint": "^8.56.0",
+    "prettier": "^3.1.1",
+    "ts-node": "^10.9.2",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}
